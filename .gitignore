@@ -12,3 +12,4 @@ build/
 output/
 sessions/
 screenshots/
+.env

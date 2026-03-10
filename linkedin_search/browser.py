@@ -40,6 +40,11 @@ class LinkedInBrowser:
             import nodriver.cdp.storage as cdp_storage
         except ImportError as exc:
             raise RuntimeError("nodriver is required. Install dependencies first.") from exc
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to import nodriver. If you are on Python 3.14, use Python 3.13 "
+                "or lower for now due to an upstream nodriver compatibility issue."
+            ) from exc
 
         self._uc = uc
         self._cdp_network = cdp_network
@@ -55,7 +60,24 @@ class LinkedInBrowser:
         if self.headless:
             config_kwargs["browser_args"] = ["--window-size=1920,1080"]
 
-        self.browser = await uc.start(**config_kwargs)
+        try:
+            self.browser = await uc.start(**config_kwargs)
+        except Exception as primary_exc:
+            # Some environments fail to launch with sandbox enabled.
+            # Retry once with sandbox disabled for first-run robustness.
+            logger.warning(
+                "Primary browser startup failed (%s). Retrying with sandbox disabled.",
+                primary_exc,
+            )
+            try:
+                retry_kwargs = dict(config_kwargs)
+                retry_kwargs["sandbox"] = False
+                self.browser = await uc.start(**retry_kwargs)
+            except Exception as retry_exc:
+                raise RuntimeError(
+                    "Failed to start browser. If you are on Python 3.14, use Python 3.13 "
+                    "or lower for now due to an upstream nodriver compatibility issue."
+                ) from retry_exc
         self.tab = self.browser.main_tab
         await asyncio.sleep(1.5)
 

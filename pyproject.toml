@@ -7,7 +7,7 @@ name = "linkedin-search"
 version = "0.1.0"
 description = "LinkedIn people search automation (standard + company people tab)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "Gianluca" }]
 dependencies = [

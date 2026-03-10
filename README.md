@@ -23,6 +23,8 @@ The project uses clear browser/session management, typed data models, and progre
 
 ## Installation
 
+Python version: `>=3.10,<3.14` (Python `3.14` is currently not supported due to an upstream `nodriver` compatibility issue).
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -45,8 +47,7 @@ This opens a browser. Log in to LinkedIn manually, then press Enter in your term
 linkedin-search standard-search \
   --query "portfolio manager" \
   --max-results 100 \
-  --session-file ~/.linkedin-search/session.json \
-  --output ./output/standard_results.csv
+  --session-file ~/.linkedin-search/session.json
 ```
 
 ### 3) Company people search
@@ -57,9 +58,19 @@ linkedin-search company-search \
   --keyword "engineering manager" \
   --location "London" \
   --max-results 100 \
-  --session-file ~/.linkedin-search/session.json \
-  --output ./output/company_results.csv
+  --session-file ~/.linkedin-search/session.json
 ```
+
+If `--output` is omitted, results are saved automatically to:
+
+- `./output/standard_results_<timestamp>.csv` for `standard-search`
+- `./output/company_results_<timestamp>.csv` for `company-search`
+
+Query tips:
+
+- Use `--query` (or `-q` / `-query`).
+- Queries can include quotes and parentheses, for example:
+  `--query 'Financial "Advisor" (Austin)'`
 
 ## CLI Commands
 

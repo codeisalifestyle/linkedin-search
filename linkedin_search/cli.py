@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .browser import LinkedInBrowser
@@ -38,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         "standard-search",
         help="Run standard search from LinkedIn global search bar",
     )
-    standard.add_argument("--query", required=True, help="Search query")
+    standard.add_argument("--query", "-q", "-query", required=True, help="Search query")
     standard.add_argument("--location", help="Optional location hint")
     standard.add_argument("--max-results", type=int, default=100, help="Max profiles to collect")
     standard.add_argument(
@@ -46,7 +47,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="~/.linkedin-search/session.json",
         help="Path to saved cookie session JSON",
     )
-    standard.add_argument("--output", required=True, help="Output CSV path")
+    standard.add_argument(
+        "--output",
+        help="Output CSV path (default: ./output/standard_results_<timestamp>.csv)",
+    )
     standard.add_argument("--headless", action="store_true", help="Run browser in headless mode")
 
     company = subparsers.add_parser(
@@ -62,7 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="~/.linkedin-search/session.json",
         help="Path to saved cookie session JSON",
     )
-    company.add_argument("--output", required=True, help="Output CSV path")
+    company.add_argument(
+        "--output",
+        help="Output CSV path (default: ./output/company_results_<timestamp>.csv)",
+    )
     company.add_argument("--headless", action="store_true", help="Run browser in headless mode")
 
     return parser
@@ -74,6 +81,11 @@ def configure_logging(debug: bool) -> None:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+
+def default_output_path(search_kind: str) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path("output") / f"{search_kind}_results_{timestamp}.csv"
 
 
 async def run_create_session(session_file: str) -> None:
@@ -131,7 +143,8 @@ async def run_standard_search(args: argparse.Namespace) -> None:
     finally:
         await browser.close()
 
-    output = export_profiles_csv(profiles, Path(args.output))
+    output_path = Path(args.output) if args.output else default_output_path("standard")
+    output = export_profiles_csv(profiles, output_path)
     print(f"Saved {len(profiles)} profiles to {output}")
 
 
@@ -150,7 +163,8 @@ async def run_company_search(args: argparse.Namespace) -> None:
     finally:
         await browser.close()
 
-    output = export_profiles_csv(profiles, Path(args.output))
+    output_path = Path(args.output) if args.output else default_output_path("company")
+    output = export_profiles_csv(profiles, output_path)
     print(f"Saved {len(profiles)} profiles to {output}")
 
 
