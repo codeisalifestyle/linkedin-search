@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linkedin-search"
+version = "0.1.0"
+description = "LinkedIn people search automation (standard + company people tab)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Gianluca" }]
+dependencies = [
+  "beautifulsoup4>=4.12.0",
+  "nodriver>=0.48",
+  "pydantic>=2.0.0",
+]
+
+[project.scripts]
+linkedin-search = "linkedin_search.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["linkedin_search*"]
+
