@@ -25,6 +25,39 @@ class CliParserTest(unittest.TestCase):
         )
         self.assertEqual(args.query, 'Financial "Advisor" (Austin)')
 
+    def test_dev_browser_start_defaults(self) -> None:
+        args = self.parser.parse_args(["dev-browser-start"])
+        self.assertEqual(args.command, "dev-browser-start")
+        self.assertFalse(args.skip_auth)
+        self.assertFalse(args.reuse_existing)
+        self.assertEqual(args.start_url, "https://www.linkedin.com/feed")
+
+    def test_dev_browser_start_reuse_existing_flag(self) -> None:
+        args = self.parser.parse_args(["dev-browser-start", "--reuse-existing"])
+        self.assertEqual(args.command, "dev-browser-start")
+        self.assertTrue(args.reuse_existing)
+
+    def test_dev_browser_action_type_with_flags(self) -> None:
+        args = self.parser.parse_args(
+            [
+                "dev-browser-action",
+                "--action",
+                "type",
+                "--selector",
+                "input[name='keywords']",
+                "--text",
+                "portfolio manager",
+                "--clear",
+                "--submit",
+            ]
+        )
+        self.assertEqual(args.command, "dev-browser-action")
+        self.assertEqual(args.action, "type")
+        self.assertEqual(args.selector, "input[name='keywords']")
+        self.assertEqual(args.text, "portfolio manager")
+        self.assertTrue(args.clear)
+        self.assertTrue(args.submit)
+
 
 if __name__ == "__main__":
     unittest.main()

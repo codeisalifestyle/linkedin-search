@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 from datetime import datetime
@@ -12,6 +13,13 @@ from pathlib import Path
 from .browser import LinkedInBrowser
 from .callbacks import ConsoleCallback
 from .csv_exporter import export_profiles_csv
+from .dev_browser import (
+    DEFAULT_ACTION_LIMIT,
+    DEFAULT_ACTION_WAIT_SECONDS,
+    DEFAULT_DEV_STATE_FILE,
+    run_dev_browser_action,
+    run_dev_browser_start,
+)
 from .models import CompanySearchConfig, StandardSearchConfig
 from .search import LinkedInSearcher
 from .session import SessionManager
@@ -71,6 +79,74 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output CSV path (default: ./output/company_results_<timestamp>.csv)",
     )
     company.add_argument("--headless", action="store_true", help="Run browser in headless mode")
+
+    dev_start = subparsers.add_parser(
+        "dev-browser-start",
+        help="Start a long-running browser for development/debugging actions",
+    )
+    dev_start.add_argument(
+        "--session-file",
+        default="~/.linkedin-search/session.json",
+        help="Path to saved cookie session JSON",
+    )
+    dev_start.add_argument(
+        "--state-file",
+        default=DEFAULT_DEV_STATE_FILE,
+        help="Where to write host/port info for later attach commands",
+    )
+    dev_start.add_argument("--headless", action="store_true", help="Run browser in headless mode")
+    dev_start.add_argument(
+        "--skip-auth",
+        action="store_true",
+        help="Skip LinkedIn cookie auth bootstrap (generic page debugging)",
+    )
+    dev_start.add_argument(
+        "--start-url",
+        default="https://www.linkedin.com/feed",
+        help="Initial URL to open once browser is ready",
+    )
+    dev_start.add_argument(
+        "--reuse-existing",
+        action="store_true",
+        help=(
+            "If an active session is already recorded in --state-file, print its "
+            "connection details and exit instead of launching a new browser"
+        ),
+    )
+
+    dev_action = subparsers.add_parser(
+        "dev-browser-action",
+        help="Attach to the running dev browser and execute one action",
+    )
+    dev_action.add_argument(
+        "--state-file",
+        default=DEFAULT_DEV_STATE_FILE,
+        help="Path to state file written by dev-browser-start",
+    )
+    dev_action.add_argument(
+        "--action",
+        required=True,
+        choices=["url", "navigate", "snapshot", "query", "click", "type", "wait"],
+        help="Action to execute against the running browser",
+    )
+    dev_action.add_argument("--url", help="Target URL (required for navigate)")
+    dev_action.add_argument("--selector", help="CSS selector (required for query/click/type)")
+    dev_action.add_argument("--text", help="Text to type (required for type)")
+    dev_action.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=DEFAULT_ACTION_WAIT_SECONDS,
+        help="Post-action wait time in seconds",
+    )
+    dev_action.add_argument("--clear", action="store_true", help="Clear input before typing")
+    dev_action.add_argument("--submit", action="store_true", help="Press Enter after type action")
+    dev_action.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_ACTION_LIMIT,
+        help="Max elements returned for snapshot/query actions",
+    )
+    dev_action.add_argument("--output", help="Optional file path to write JSON action output")
 
     return parser
 
@@ -168,6 +244,33 @@ async def run_company_search(args: argparse.Namespace) -> None:
     print(f"Saved {len(profiles)} profiles to {output}")
 
 
+async def run_dev_browser_start_cmd(args: argparse.Namespace) -> None:
+    await run_dev_browser_start(
+        session_file=args.session_file,
+        state_file=args.state_file,
+        headless=args.headless,
+        skip_auth=args.skip_auth,
+        start_url=args.start_url,
+        reuse_existing=args.reuse_existing,
+    )
+
+
+async def run_dev_browser_action_cmd(args: argparse.Namespace) -> None:
+    payload = await run_dev_browser_action(
+        state_file=args.state_file,
+        action=args.action,
+        selector=args.selector,
+        text=args.text,
+        url=args.url,
+        wait_seconds=args.wait_seconds,
+        clear=args.clear,
+        submit=args.submit,
+        limit=args.limit,
+        output=args.output,
+    )
+    print(json.dumps(payload, indent=2))
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -180,6 +283,10 @@ def main() -> None:
             asyncio.run(run_standard_search(args))
         elif args.command == "company-search":
             asyncio.run(run_company_search(args))
+        elif args.command == "dev-browser-start":
+            asyncio.run(run_dev_browser_start_cmd(args))
+        elif args.command == "dev-browser-action":
+            asyncio.run(run_dev_browser_action_cmd(args))
         else:
             parser.error(f"Unknown command: {args.command}")
     except KeyboardInterrupt:

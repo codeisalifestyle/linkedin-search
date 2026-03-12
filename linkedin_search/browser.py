@@ -13,8 +13,24 @@ logger = logging.getLogger(__name__)
 class LinkedInBrowser:
     """Thin wrapper around nodriver with auth/session helpers."""
 
-    def __init__(self, *, headless: bool = False):
+    def __init__(
+        self,
+        *,
+        headless: bool = False,
+        connect_host: str | None = None,
+        connect_port: int | None = None,
+        user_data_dir: str | None = None,
+        browser_args: list[str] | None = None,
+        browser_executable_path: str | None = None,
+        sandbox: bool = True,
+    ):
         self.headless = headless
+        self.connect_host = connect_host
+        self.connect_port = connect_port
+        self.user_data_dir = user_data_dir
+        self.browser_args = list(browser_args or [])
+        self.browser_executable_path = browser_executable_path
+        self.sandbox = sandbox
         self.browser: Any = None
         self.tab: Any = None
         self._uc: Any = None
@@ -22,6 +38,7 @@ class LinkedInBrowser:
         self._cdp_storage: Any = None
         self._cdp_input: Any = None
         self._cdp_page: Any = None
+        self._owns_process: bool = False
 
     async def __aenter__(self) -> "LinkedInBrowser":
         await self.start()
@@ -52,47 +69,94 @@ class LinkedInBrowser:
         self._cdp_input = cdp_input
         self._cdp_page = cdp_page
 
-        # Keep startup minimal so nodriver's own stealth profile remains intact.
-        config_kwargs: dict[str, Any] = {
-            "headless": self.headless,
-            "sandbox": True,
-        }
-        if self.headless:
-            config_kwargs["browser_args"] = ["--window-size=1920,1080"]
+        attach_mode = self.connect_host is not None and self.connect_port is not None
+        self._owns_process = not attach_mode
 
-        try:
-            self.browser = await uc.start(**config_kwargs)
-        except Exception as primary_exc:
-            # Some environments fail to launch with sandbox enabled.
-            # Retry once with sandbox disabled for first-run robustness.
-            logger.warning(
-                "Primary browser startup failed (%s). Retrying with sandbox disabled.",
-                primary_exc,
-            )
+        if attach_mode:
             try:
-                retry_kwargs = dict(config_kwargs)
-                retry_kwargs["sandbox"] = False
-                self.browser = await uc.start(**retry_kwargs)
-            except Exception as retry_exc:
+                self.browser = await uc.start(host=self.connect_host, port=self.connect_port)
+            except Exception as exc:
                 raise RuntimeError(
-                    "Failed to start browser. If you are on Python 3.14, use Python 3.13 "
-                    "or lower for now due to an upstream nodriver compatibility issue."
-                ) from retry_exc
+                    f"Failed to connect to browser at {self.connect_host}:{self.connect_port}."
+                ) from exc
+        else:
+            # Keep startup minimal so nodriver's own stealth profile remains intact.
+            config_kwargs: dict[str, Any] = {
+                "headless": self.headless,
+                "sandbox": self.sandbox,
+            }
+            if self.user_data_dir:
+                config_kwargs["user_data_dir"] = self.user_data_dir
+            if self.browser_executable_path:
+                config_kwargs["browser_executable_path"] = self.browser_executable_path
+
+            merged_args: list[str] = list(self.browser_args)
+            if self.headless:
+                merged_args.append("--window-size=1920,1080")
+            if merged_args:
+                config_kwargs["browser_args"] = merged_args
+
+            try:
+                self.browser = await uc.start(**config_kwargs)
+            except Exception as primary_exc:
+                # Some environments fail to launch with sandbox enabled.
+                # Retry once with sandbox disabled for first-run robustness.
+                logger.warning(
+                    "Primary browser startup failed (%s). Retrying with sandbox disabled.",
+                    primary_exc,
+                )
+                try:
+                    retry_kwargs = dict(config_kwargs)
+                    if retry_kwargs.get("sandbox", True):
+                        retry_kwargs["sandbox"] = False
+                    self.browser = await uc.start(**retry_kwargs)
+                except Exception as retry_exc:
+                    raise RuntimeError(
+                        "Failed to start browser. If you are on Python 3.14, use Python 3.13 "
+                        "or lower for now due to an upstream nodriver compatibility issue."
+                    ) from retry_exc
         self.tab = self.browser.main_tab
         await asyncio.sleep(1.5)
 
-        await self._inject_stealth_script()
-        if self.headless:
-            await self._apply_headless_user_agent()
+        if self._owns_process:
+            await self._inject_stealth_script()
+            if self.headless:
+                await self._apply_headless_user_agent()
 
     async def close(self) -> None:
         if self.browser is None:
             return
         try:
-            self.browser.stop()
+            if self._owns_process:
+                self.browser.stop()
         finally:
             self.browser = None
             self.tab = None
+            self._owns_process = False
+
+    async def add_script_on_new_document(self, source: str) -> None:
+        await self.tab.send(self._cdp_page.add_script_to_evaluate_on_new_document(source=source))
+
+    @property
+    def connection_host(self) -> str | None:
+        config = getattr(self.browser, "config", None)
+        host = getattr(config, "host", None)
+        return str(host) if host is not None else None
+
+    @property
+    def connection_port(self) -> int | None:
+        config = getattr(self.browser, "config", None)
+        port = getattr(config, "port", None)
+        return int(port) if port is not None else None
+
+    @property
+    def websocket_url(self) -> str | None:
+        if self.browser is None:
+            return None
+        raw = getattr(self.browser, "websocket_url", None)
+        if raw is None:
+            return None
+        return str(raw)
 
     async def _inject_stealth_script(self) -> None:
         script = """

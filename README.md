@@ -26,7 +26,7 @@ The project uses clear browser/session management, typed data models, and progre
 Python version: `>=3.10,<3.14` (Python `3.14` is currently not supported due to an upstream `nodriver` compatibility issue).
 
 ```bash
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
@@ -72,11 +72,129 @@ Query tips:
 - Queries can include quotes and parentheses, for example:
   `--query 'Financial "Advisor" (Austin)'`
 
+## Development Browser Flow (Locator Debugging)
+
+Use this when you want a long-running browser instance and attachable actions for
+iterative page analysis (selectors, click/type behavior, navigation states).
+
+### 1) Start dev browser (keeps running)
+
+```bash
+linkedin-search dev-browser-start \
+  --session-file ~/.linkedin-search/session.json \
+  --state-file output/dev_browser_state.json
+```
+
+This writes host/port connection info to `output/dev_browser_state.json`.
+If a session is already active for that state file, the command now fails fast to
+avoid accidentally launching duplicate browser windows. Use:
+
+```bash
+linkedin-search dev-browser-start --state-file output/dev_browser_state.json --reuse-existing
+```
+
+to print the existing host/port and reuse the current session.
+
+### 2) Attach and run actions from another terminal
+
+```bash
+linkedin-search dev-browser-action \
+  --state-file output/dev_browser_state.json \
+  --action snapshot \
+  --limit 30 \
+  --output output/page_snapshot.json
+```
+
+Common actions:
+
+```bash
+# Current page URL and title
+linkedin-search dev-browser-action --state-file output/dev_browser_state.json --action url
+
+# Navigate
+linkedin-search dev-browser-action --state-file output/dev_browser_state.json --action navigate --url "https://www.linkedin.com/search/results/people/"
+
+# Inspect selector matches
+linkedin-search dev-browser-action --state-file output/dev_browser_state.json --action query --selector "input.search-global-typeahead__input"
+
+# Type and submit
+linkedin-search dev-browser-action --state-file output/dev_browser_state.json --action type --selector "input.search-global-typeahead__input" --text "portfolio manager" --clear --submit
+
+# Click
+linkedin-search dev-browser-action --state-file output/dev_browser_state.json --action click --selector "button[aria-label='People']"
+```
+
+### 3) Stop session
+
+Go back to the `dev-browser-start` terminal and press `Ctrl+C`.
+
+## External MCP Server (`browser-bridge-mcp`)
+
+This repository no longer ships an MCP server implementation. Use the external
+`browser-bridge-mcp` project instead.
+
+### Install
+
+```bash
+pipx install "git+https://github.com/codeisalifestyle/browser-bridge-mcp.git"
+```
+
+If you prefer the local project virtualenv:
+
+```bash
+<venv>/bin/pip install "git+https://github.com/codeisalifestyle/browser-bridge-mcp.git"
+```
+
+Use a Python `>=3.10,<3.14` virtualenv for MCP installation.
+
+### Start MCP server
+
+```bash
+browser-bridge-mcp --transport stdio
+```
+
+### MCP client config example
+
+```json
+{
+  "mcpServers": {
+    "browser-bridge-mcp": {
+      "command": "browser-bridge-mcp",
+      "args": ["--transport", "stdio"]
+    }
+  }
+}
+```
+
+### Important: `CallMcpTool` argument shape
+
+When invoking MCP tools through Cursor `CallMcpTool`, pass tool parameters inside
+an `arguments` object. Example:
+
+```json
+{
+  "server": "user-browser-bridge-mcp",
+  "toolName": "session_start",
+  "arguments": {
+    "cookie_file": "~/.linkedin-search/session.json",
+    "cookie_fallback_domain": ".linkedin.com",
+    "start_url": "https://www.linkedin.com/feed/",
+    "headless": false
+  }
+}
+```
+
+If parameters are provided outside `arguments`, many clients will send an empty
+payload and the server will launch a default browser session (which can look like
+an extra unexpected window).
+
 ## CLI Commands
 
 - `create-session`
 - `standard-search`
 - `company-search`
+- `dev-browser-start`
+- `dev-browser-action`
 
 Run `linkedin-search <command> --help` for full options.
 
