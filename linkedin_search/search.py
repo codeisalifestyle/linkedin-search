@@ -73,8 +73,8 @@ class LinkedInSearcher:
         await self._switch_to_people_results(config.query)
 
         if config.location:
-            self._emit(f"Applying location hint: {config.location}", 12)
-            await self._apply_standard_location_hint(config.location)
+            self._emit(f"Applying location filter: {config.location}", 12)
+            await self._apply_standard_location_filter(config.location)
 
         all_profiles: list[PersonProfile] = []
         seen_urls: set[str] = set()
@@ -202,19 +202,155 @@ class LinkedInSearcher:
         direct_people_url = f"https://www.linkedin.com/search/results/people/?keywords={quote(keywords)}"
         await self.browser.goto(direct_people_url, wait_seconds=3)
 
-    async def _apply_standard_location_hint(self, location: str) -> None:
-        """Best-effort location hint by appending location to keywords."""
+    async def _apply_standard_location_filter(self, location: str) -> None:
+        normalized = location.strip()
+        if not normalized:
+            return
+
         current_url = str(self.browser.tab.url)
         if "/search/results/people/" not in current_url:
+            raise RuntimeError("Location filter can only be applied on People results.")
+        if self._url_has_location_facet(current_url):
             return
-        parsed = urlparse(current_url)
+
+        await self._apply_standard_location_filter_ui(normalized)
+
+    def _url_has_location_facet(self, url: str) -> bool:
+        parsed = urlparse(url)
         params = parse_qs(parsed.query)
-        keywords = params.get("keywords", [""])[0]
-        if location.lower() in keywords.lower():
-            return
-        merged_keywords = f"{keywords} {location}".strip()
-        hinted_url = f"https://www.linkedin.com/search/results/people/?keywords={quote(merged_keywords)}"
-        await self.browser.goto(hinted_url, wait_seconds=3)
+        for key, values in params.items():
+            lowered = key.lower()
+            if "geo" not in lowered:
+                continue
+            if any(str(value).strip() for value in values):
+                return True
+        return False
+
+    async def _apply_standard_location_filter_ui(self, location: str) -> None:
+        locations_toggle = await self._find_clickable_by_text("Locations")
+        if not locations_toggle:
+            raise RuntimeError("Could not find 'Locations' filter control.")
+
+        try:
+            await locations_toggle.scroll_into_view()
+        except Exception:
+            pass
+        await asyncio.sleep(0.3)
+        await locations_toggle.click()
+        await asyncio.sleep(random.uniform(1.0, 1.6))
+
+        location_selectors = [
+            'input[placeholder*="Add a location"]',
+            'input[aria-label*="Add a location"]',
+            'input[placeholder*="Location"]',
+            'input[aria-label*="Location"]',
+            'input[id*="advanced-filter-geoUrn"]',
+            'input[name*="geoUrn"]',
+        ]
+        location_input = await self.browser.select_first(location_selectors)
+        if not location_input:
+            await self._dismiss_dialog()
+            raise RuntimeError("Could not find location input in LinkedIn filters.")
+
+        await location_input.click()
+        await asyncio.sleep(0.2)
+        await self._clear_focused_input()
+        await asyncio.sleep(0.1)
+        await self._type_naturally(location_input, location)
+        await asyncio.sleep(random.uniform(0.8, 1.2))
+        await self._select_first_typeahead_option()
+
+        show_results_control = await self.browser.select_first(
+            [
+                "button.search-reusables__secondary-filters-show-results-button",
+                "button.search-reusables__all-filters-show-results-button",
+                'button[data-test-reusables-filters-show-results-button]',
+                'button[aria-label*="Show results"]',
+                "a[href*='origin=FACETED_SEARCH']",
+            ]
+        )
+        if not show_results_control:
+            show_results_control = await self._find_clickable_by_text("Show results")
+        if not show_results_control:
+            await self._dismiss_dialog()
+            raise RuntimeError("Could not find 'Show results' after setting location filter.")
+
+        try:
+            await show_results_control.scroll_into_view()
+        except Exception:
+            pass
+        await asyncio.sleep(0.2)
+        await show_results_control.click()
+        await asyncio.sleep(random.uniform(3.0, 4.5))
+        if not self._url_has_location_facet(str(self.browser.tab.url)):
+            raise RuntimeError("Location filter did not apply (geo facet missing in URL).")
+
+    async def _find_clickable_by_text(self, needle: str) -> Any | None:
+        elements = await self.browser.select_all("button, a, div[role='button']")
+        for element in elements:
+            try:
+                text = await element.apply(
+                    """
+                    el => [el.innerText || "", el.getAttribute("aria-label") || ""]
+                      .join(" ")
+                      .replace(/\\s+/g, " ")
+                      .trim()
+                    """
+                )
+            except Exception:
+                continue
+            if text and needle.lower() in str(text).lower():
+                return element
+        return None
+
+    async def _clear_focused_input(self) -> None:
+        try:
+            await self.browser.evaluate(
+                """
+                (() => {
+                  const el = document.activeElement;
+                  if (!el || !("value" in el)) return false;
+                  el.value = "";
+                  el.dispatchEvent(new Event("input", { bubbles: true }));
+                  return true;
+                })()
+                """
+            )
+        except Exception:
+            pass
+
+    async def _select_first_typeahead_option(self) -> None:
+        option = await self.browser.select_first(
+            [
+                'li[role="option"]',
+                'div[role="option"]',
+                "li.search-reusables__collection-values-item",
+            ]
+        )
+        if option:
+            try:
+                await option.scroll_into_view()
+            except Exception:
+                pass
+            await asyncio.sleep(0.2)
+            try:
+                await option.click()
+                await asyncio.sleep(0.5)
+                return
+            except Exception:
+                pass
+
+        await self.browser.press_key("ArrowDown", "ArrowDown", 40)
+        await asyncio.sleep(0.2)
+        await self.browser.press_key("Enter", "Enter", 13)
+        await asyncio.sleep(0.5)
+
+    async def _dismiss_dialog(self) -> None:
+        try:
+            await self.browser.press_key("Escape", "Escape", 27)
+            await asyncio.sleep(0.3)
+        except Exception:
+            pass
 
     async def _extract_standard_page_profiles(self) -> list[PersonProfile]:
         html = await self.browser.tab.get_content()

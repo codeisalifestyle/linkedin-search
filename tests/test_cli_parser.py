@@ -14,6 +14,7 @@ class CliParserTest(unittest.TestCase):
         self.assertEqual(args.query, "Financial Advisor")
         self.assertEqual(args.location, "Austin")
         self.assertIsNone(args.output)
+        self.assertEqual(args.output_format, "csv")
 
     def test_standard_search_accepts_single_dash_query_alias(self) -> None:
         args = self.parser.parse_args(["standard-search", "-query", "Financial Advisor"])
@@ -24,6 +25,19 @@ class CliParserTest(unittest.TestCase):
             ['standard-search', '--query', 'Financial "Advisor" (Austin)']
         )
         self.assertEqual(args.query, 'Financial "Advisor" (Austin)')
+
+    def test_company_search_accepts_json_output_format(self) -> None:
+        args = self.parser.parse_args(
+            [
+                "company-search",
+                "--company-url",
+                "https://www.linkedin.com/company/microsoft/",
+                "--output-format",
+                "json",
+            ]
+        )
+        self.assertEqual(args.command, "company-search")
+        self.assertEqual(args.output_format, "json")
 
     def test_dev_browser_start_defaults(self) -> None:
         args = self.parser.parse_args(["dev-browser-start"])

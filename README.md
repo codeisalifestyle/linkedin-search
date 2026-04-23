@@ -47,6 +47,7 @@ This opens a browser. Log in to LinkedIn manually, then press Enter in your term
 linkedin-search standard-search \
   --query "portfolio manager" \
   --max-results 100 \
+  --output-format json \
   --session-file ~/.linkedin-search/session.json
 ```
 
@@ -58,13 +59,19 @@ linkedin-search company-search \
   --keyword "engineering manager" \
   --location "London" \
   --max-results 100 \
+  --output-format json \
   --session-file ~/.linkedin-search/session.json
 ```
 
 If `--output` is omitted, results are saved automatically to:
 
-- `./output/standard_results_<timestamp>.csv` for `standard-search`
-- `./output/company_results_<timestamp>.csv` for `company-search`
+- `./output/standard_results_<timestamp>.<format>` for `standard-search`
+- `./output/company_results_<timestamp>.<format>` for `company-search`
+
+Output format defaults to CSV and can be changed with:
+
+- `--output-format csv`
+- `--output-format json`
 
 Query tips:
 
@@ -198,9 +205,9 @@ an extra unexpected window).
 
 Run `linkedin-search <command> --help` for full options.
 
-## Output CSV Schema
+## Output Schema
 
-The exported CSV includes:
+The exported CSV/JSON records include:
 
 - `name`
 - `headline`

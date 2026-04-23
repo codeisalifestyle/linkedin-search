@@ -20,7 +20,8 @@ from .dev_browser import (
     run_dev_browser_action,
     run_dev_browser_start,
 )
-from .models import CompanySearchConfig, StandardSearchConfig
+from .json_exporter import export_profiles_json
+from .models import CompanySearchConfig, PersonProfile, StandardSearchConfig
 from .search import LinkedInSearcher
 from .session import SessionManager
 
@@ -48,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run standard search from LinkedIn global search bar",
     )
     standard.add_argument("--query", "-q", "-query", required=True, help="Search query")
-    standard.add_argument("--location", help="Optional location hint")
+    standard.add_argument("--location", help="Optional location filter")
     standard.add_argument("--max-results", type=int, default=100, help="Max profiles to collect")
     standard.add_argument(
         "--session-file",
@@ -57,7 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     standard.add_argument(
         "--output",
-        help="Output CSV path (default: ./output/standard_results_<timestamp>.csv)",
+        help="Output path (default: ./output/standard_results_<timestamp>.<format>)",
+    )
+    standard.add_argument(
+        "--output-format",
+        choices=["csv", "json"],
+        default="csv",
+        help="Output format (default: csv)",
     )
     standard.add_argument("--headless", action="store_true", help="Run browser in headless mode")
 
@@ -76,7 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     company.add_argument(
         "--output",
-        help="Output CSV path (default: ./output/company_results_<timestamp>.csv)",
+        help="Output path (default: ./output/company_results_<timestamp>.<format>)",
+    )
+    company.add_argument(
+        "--output-format",
+        choices=["csv", "json"],
+        default="csv",
+        help="Output format (default: csv)",
     )
     company.add_argument("--headless", action="store_true", help="Run browser in headless mode")
 
@@ -159,9 +172,27 @@ def configure_logging(debug: bool) -> None:
     )
 
 
-def default_output_path(search_kind: str) -> Path:
+def default_output_path(search_kind: str, output_format: str) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path("output") / f"{search_kind}_results_{timestamp}.csv"
+    extension = "json" if output_format == "json" else "csv"
+    return Path("output") / f"{search_kind}_results_{timestamp}.{extension}"
+
+
+def export_profiles(
+    profiles: list[PersonProfile],
+    *,
+    search_kind: str,
+    output: str | None,
+    output_format: str,
+) -> Path:
+    output_path = (
+        Path(output)
+        if output
+        else default_output_path(search_kind=search_kind, output_format=output_format)
+    )
+    if output_format == "json":
+        return export_profiles_json(profiles, output_path)
+    return export_profiles_csv(profiles, output_path)
 
 
 async def run_create_session(session_file: str) -> None:
@@ -219,9 +250,13 @@ async def run_standard_search(args: argparse.Namespace) -> None:
     finally:
         await browser.close()
 
-    output_path = Path(args.output) if args.output else default_output_path("standard")
-    output = export_profiles_csv(profiles, output_path)
-    print(f"Saved {len(profiles)} profiles to {output}")
+    output_path = export_profiles(
+        profiles,
+        search_kind="standard",
+        output=args.output,
+        output_format=args.output_format,
+    )
+    print(f"Saved {len(profiles)} profiles to {output_path}")
 
 
 async def run_company_search(args: argparse.Namespace) -> None:
@@ -239,9 +274,13 @@ async def run_company_search(args: argparse.Namespace) -> None:
     finally:
         await browser.close()
 
-    output_path = Path(args.output) if args.output else default_output_path("company")
-    output = export_profiles_csv(profiles, output_path)
-    print(f"Saved {len(profiles)} profiles to {output}")
+    output_path = export_profiles(
+        profiles,
+        search_kind="company",
+        output=args.output,
+        output_format=args.output_format,
+    )
+    print(f"Saved {len(profiles)} profiles to {output_path}")
 
 
 async def run_dev_browser_start_cmd(args: argparse.Namespace) -> None:
