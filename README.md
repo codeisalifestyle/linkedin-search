@@ -27,8 +27,7 @@ Two search flows are included:
 
 ## Installation
 
-Python `>=3.10,<3.14` is required (`3.14` is not yet supported due to an
-upstream compatibility issue).
+Python `>=3.10` is required.
 
 ```bash
 python3.13 -m venv .venv
