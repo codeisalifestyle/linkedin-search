@@ -1,19 +1,23 @@
 # linkedin-search
 
-LinkedIn people discovery automation with two core flows:
+A browser automation script for LinkedIn people discovery. It drives a real
+browser session over the Chrome DevTools Protocol (CDP), interacting with
+LinkedIn exactly as a human would — no proprietary APIs, no headless-only
+hacks.
 
-- `standard-search`: use LinkedIn's main search bar, switch to People results, paginate, and extract profiles.
-- `company-search`: start from a LinkedIn company page and extract people from its `People` tab.
+Two search flows are included:
 
-The project uses clear browser/session management, typed data models, and progress callbacks.
+- `standard-search` — use LinkedIn's main search bar, switch to People results, paginate, and extract profiles.
+- `company-search` — start from a LinkedIn company page and extract people from its People tab.
 
 ## Features
 
-- Stealth-first webdriver setup using `nodriver` (no automation flags added by this project)
-- Cookie-based auth session handling
+- Stealth-first browser automation (no automation flags injected)
+- Cookie-based session management — log in once, reuse cookies
+- Real LinkedIn UI location filtering via typeahead
+- CSV and JSON export
 - Progress callbacks (`ConsoleCallback` included)
 - Typed data models (Pydantic)
-- CSV export to any local output path
 - CLI-first workflow
 
 ## Important
@@ -23,13 +27,71 @@ The project uses clear browser/session management, typed data models, and progre
 
 ## Installation
 
-Python version: `>=3.10,<3.14` (Python `3.14` is currently not supported due to an upstream `nodriver` compatibility issue).
+Python `>=3.10,<3.14` is required (`3.14` is not yet supported due to an
+upstream compatibility issue).
 
 ```bash
 python3.13 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
+
+## Connecting a Browser
+
+The script communicates with Chrome / Chromium through CDP. You can provide a
+browser in several ways:
+
+### Default: let the script launch one
+
+When you run any command without connection flags the script starts a local
+Chromium instance automatically. This is the simplest path and works out of the
+box after `pip install -e .`.
+
+### Attach to an existing browser via CDP
+
+Start Chrome yourself with remote debugging enabled:
+
+```bash
+google-chrome --remote-debugging-port=9222
+```
+
+Then point the script at it (the `dev-browser-start` command already supports
+`--host` / `--port` flags, or you can use the connection info written to a
+state file).
+
+### Selenium / WebDriver
+
+If you already manage browser sessions through Selenium, enable CDP on the
+WebDriver instance and let the script attach:
+
+```python
+from selenium import webdriver
+
+options = webdriver.ChromeOptions()
+options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+driver = webdriver.Chrome(options=options)
+# linkedin-search can now connect to the same CDP endpoint
+```
+
+### Playwright
+
+Playwright can launch or connect to a Chromium instance with CDP exposed:
+
+```python
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(args=["--remote-debugging-port=9222"])
+    # linkedin-search attaches to the same port
+```
+
+### browser-bridge-mcp (MCP option)
+
+[browser-bridge-mcp](https://github.com/codeisalifestyle/browser-bridge-mcp) is
+a standalone MCP server that wraps a stealth browser session and exposes it as
+tool calls. If you work inside an MCP-capable environment (Cursor, Claude Desktop,
+etc.) it lets you launch, inspect, and control browser sessions without writing
+any glue code — just add it as an MCP server and call its tools.
 
 ## Quick Start
 
@@ -134,66 +196,6 @@ linkedin-search dev-browser-action --state-file output/dev_browser_state.json --
 ### 3) Stop session
 
 Go back to the `dev-browser-start` terminal and press `Ctrl+C`.
-
-## External MCP Server (`browser-bridge-mcp`)
-
-This repository no longer ships an MCP server implementation. Use the external
-`browser-bridge-mcp` project instead.
-
-### Install
-
-```bash
-pipx install "git+https://github.com/codeisalifestyle/browser-bridge-mcp.git"
-```
-
-If you prefer the local project virtualenv:
-
-```bash
-<venv>/bin/pip install "git+https://github.com/codeisalifestyle/browser-bridge-mcp.git"
-```
-
-Use a Python `>=3.10,<3.14` virtualenv for MCP installation.
-
-### Start MCP server
-
-```bash
-browser-bridge-mcp --transport stdio
-```
-
-### MCP client config example
-
-```json
-{
-  "mcpServers": {
-    "browser-bridge-mcp": {
-      "command": "browser-bridge-mcp",
-      "args": ["--transport", "stdio"]
-    }
-  }
-}
-```
-
-### Important: `CallMcpTool` argument shape
-
-When invoking MCP tools through Cursor `CallMcpTool`, pass tool parameters inside
-an `arguments` object. Example:
-
-```json
-{
-  "server": "user-browser-bridge-mcp",
-  "toolName": "session_start",
-  "arguments": {
-    "cookie_file": "~/.linkedin-search/session.json",
-    "cookie_fallback_domain": ".linkedin.com",
-    "start_url": "https://www.linkedin.com/feed/",
-    "headless": false
-  }
-}
-```
-
-If parameters are provided outside `arguments`, many clients will send an empty
-payload and the server will launch a default browser session (which can look like
-an extra unexpected window).
 
 ## CLI Commands
 
