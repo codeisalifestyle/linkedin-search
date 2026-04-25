@@ -20,10 +20,57 @@ from .dev_browser import (
     run_dev_browser_action,
     run_dev_browser_start,
 )
+from .humanize import SessionRhythm, session_cooldown, session_warmup
 from .json_exporter import export_profiles_json
 from .models import CompanySearchConfig, PersonProfile, StandardSearchConfig
 from .search import LinkedInSearcher
 from .session import SessionManager
+
+
+def _add_humanize_args(parser: argparse.ArgumentParser) -> None:
+    """Attach humanization flags to a search subparser.
+
+    All humanization is opt-in. Defaults preserve the prior behaviour (no
+    warmup/cooldown, no decoy clicks). Personality is account-stable: by
+    default we derive the personality seed from the session file path so
+    every run for the same account feels like the same user. Override with
+    ``--personality-seed`` (or ``--no-stable-personality`` for fully random).
+    """
+    parser.add_argument(
+        "--warmup",
+        action="store_true",
+        help="Browse the LinkedIn feed briefly before starting the search task",
+    )
+    parser.add_argument(
+        "--cooldown",
+        action="store_true",
+        help="Drop back to the LinkedIn feed and scroll briefly after the task completes",
+    )
+    parser.add_argument(
+        "--camouflage",
+        action="store_true",
+        help="Occasionally open a non-target profile in a new tab as decoy traffic",
+    )
+    parser.add_argument(
+        "--personality-seed",
+        default=None,
+        help="Seed string for session personality. Default: derived from --session-file path",
+    )
+    parser.add_argument(
+        "--no-stable-personality",
+        action="store_true",
+        help="Ignore the default account-derived seed and randomize personality every run",
+    )
+
+
+def _build_rhythm(args: argparse.Namespace) -> SessionRhythm:
+    """Build a SessionRhythm from CLI args, preferring an account-stable seed."""
+    if args.no_stable_personality and args.personality_seed is None:
+        return SessionRhythm.from_seed(None)
+    seed = args.personality_seed
+    if seed is None:
+        seed = str(Path(args.session_file).expanduser().resolve())
+    return SessionRhythm.from_seed(seed)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: csv)",
     )
     standard.add_argument("--headless", action="store_true", help="Run browser in headless mode")
+    _add_humanize_args(standard)
 
     company = subparsers.add_parser(
         "company-search",
@@ -92,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: csv)",
     )
     company.add_argument("--headless", action="store_true", help="Run browser in headless mode")
+    _add_humanize_args(company)
 
     dev_start = subparsers.add_parser(
         "dev-browser-start",
@@ -243,10 +292,20 @@ async def run_standard_search(args: argparse.Namespace) -> None:
         max_results=args.max_results,
     )
     callback = ConsoleCallback()
+    rhythm = _build_rhythm(args)
     browser = await _open_authenticated_browser(args.session_file, headless=args.headless)
     try:
-        searcher = LinkedInSearcher(browser, callback=callback)
+        if args.warmup:
+            await session_warmup(browser, rhythm)
+        searcher = LinkedInSearcher(
+            browser,
+            callback=callback,
+            rhythm=rhythm,
+            camouflage=args.camouflage,
+        )
         profiles = await searcher.standard_search(config)
+        if args.cooldown:
+            await session_cooldown(browser, rhythm)
     finally:
         await browser.close()
 
@@ -267,10 +326,20 @@ async def run_company_search(args: argparse.Namespace) -> None:
         max_results=args.max_results,
     )
     callback = ConsoleCallback()
+    rhythm = _build_rhythm(args)
     browser = await _open_authenticated_browser(args.session_file, headless=args.headless)
     try:
-        searcher = LinkedInSearcher(browser, callback=callback)
+        if args.warmup:
+            await session_warmup(browser, rhythm)
+        searcher = LinkedInSearcher(
+            browser,
+            callback=callback,
+            rhythm=rhythm,
+            camouflage=args.camouflage,
+        )
         profiles = await searcher.company_search(config)
+        if args.cooldown:
+            await session_cooldown(browser, rhythm)
     finally:
         await browser.close()
 

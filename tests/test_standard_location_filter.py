@@ -32,6 +32,18 @@ class StandardLocationFilterTest(unittest.TestCase):
         url = "https://www.linkedin.com/search/results/people/?keywords=geo+analyst"
         self.assertFalse(searcher._url_has_location_facet(url))
 
+    def test_company_url_has_location_facet(self) -> None:
+        browser = _FakeBrowser("https://www.linkedin.com/company/aksia/people/")
+        searcher = LinkedInSearcher(browser)
+        url = "https://www.linkedin.com/company/aksia/people/?facetGeoRegion=101165590"
+        self.assertTrue(searcher._url_has_company_location_facet(url))
+
+    def test_company_url_without_location_facet(self) -> None:
+        browser = _FakeBrowser("https://www.linkedin.com/company/aksia/people/")
+        searcher = LinkedInSearcher(browser)
+        url = "https://www.linkedin.com/company/aksia/people/?keywords=research"
+        self.assertFalse(searcher._url_has_company_location_facet(url))
+
     def test_location_filter_raises_if_not_people_page(self) -> None:
         browser = _FakeBrowser("https://www.linkedin.com/feed/")
         searcher = LinkedInSearcher(browser)
@@ -49,6 +61,19 @@ class StandardLocationFilterTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "ui failure"):
             asyncio.run(searcher._apply_standard_location_filter("Austin"))
+
+    def test_slug_from_people_url(self) -> None:
+        browser = _FakeBrowser("about:blank")
+        searcher = LinkedInSearcher(browser)
+        self.assertEqual(
+            searcher._slug_from_people_url("https://www.linkedin.com/company/aksia/people/"),
+            "aksia",
+        )
+        self.assertEqual(
+            searcher._slug_from_people_url("https://www.linkedin.com/company/albourne-partners/people/?facetGeoRegion=101165590"),
+            "albourne-partners",
+        )
+        self.assertEqual(searcher._slug_from_people_url("https://example.com/foo"), "")
 
 
 if __name__ == "__main__":

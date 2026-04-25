@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import random
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -13,6 +13,16 @@ from bs4 import BeautifulSoup
 
 from .browser import LinkedInBrowser
 from .callbacks import NullCallback, ProgressCallback
+from .humanize import (
+    SessionRhythm,
+    hover_drift,
+    human_click,
+    human_scroll,
+    human_sleep,
+    human_type,
+    maybe_decoy_profile_open,
+    maybe_micro_break,
+)
 from .models import CompanySearchConfig, PersonProfile, SearchType, StandardSearchConfig
 
 
@@ -31,9 +41,18 @@ class _SearchState:
 class LinkedInSearcher:
     """Implements the two required LinkedIn search functions."""
 
-    def __init__(self, browser: LinkedInBrowser, callback: ProgressCallback | None = None):
+    def __init__(
+        self,
+        browser: LinkedInBrowser,
+        callback: ProgressCallback | None = None,
+        *,
+        rhythm: SessionRhythm | None = None,
+        camouflage: bool = False,
+    ):
         self.browser = browser
         self.callback = callback or NullCallback()
+        self.rhythm = rhythm or SessionRhythm.from_seed(None)
+        self.camouflage = camouflage
 
     def _emit_start(self, operation: str) -> None:
         self.callback.on_start(operation)
@@ -52,7 +71,8 @@ class LinkedInSearcher:
         self._emit_start(f"Standard search: {config.query}")
         state = _SearchState(max_results=config.max_results)
 
-        await self.browser.goto("https://www.linkedin.com/feed", wait_seconds=3)
+        await self.browser.goto("https://www.linkedin.com/feed", wait_seconds=0)
+        await human_sleep(self.rhythm, "page_load")
         search_input = await self.browser.select_first(
             [
                 ".search-global-typeahead__input",
@@ -64,11 +84,12 @@ class LinkedInSearcher:
             raise RuntimeError("Could not find LinkedIn search bar.")
 
         self._emit("Typing search query...", 5)
-        await search_input.click()
-        await asyncio.sleep(0.4)
-        await self._type_naturally(search_input, config.query)
+        await human_click(self.browser, search_input, self.rhythm)
+        await human_sleep(self.rhythm, "micro")
+        await human_type(self.browser, search_input, config.query, self.rhythm)
+        await human_sleep(self.rhythm, "micro")
         await self.browser.press_key("Enter", "Enter", 13)
-        await asyncio.sleep(random.uniform(4.0, 6.0))
+        await human_sleep(self.rhythm, "page_load")
 
         await self._switch_to_people_results(config.query)
 
@@ -82,6 +103,8 @@ class LinkedInSearcher:
 
         while len(all_profiles) < config.max_results:
             self._emit(f"Extracting page {page}...", max(15, state.percent(15, 95)))
+            await human_sleep(self.rhythm, "scan")
+            await hover_drift(self.browser, self.rhythm)
             page_profiles = await self._extract_standard_page_profiles()
             if not page_profiles:
                 break
@@ -100,6 +123,9 @@ class LinkedInSearcher:
                 state.percent(15, 95),
             )
 
+            if self.camouflage:
+                await self._maybe_decoy()
+
             if len(all_profiles) >= config.max_results:
                 break
 
@@ -108,7 +134,8 @@ class LinkedInSearcher:
                 break
 
             page += 1
-            await asyncio.sleep(random.uniform(2.0, 4.0))
+            await maybe_micro_break(self.rhythm)
+            await human_sleep(self.rhythm, "next_page")
 
         final = all_profiles[: config.max_results]
         self._emit_done(f"Standard search complete: {len(final)} profiles")
@@ -126,13 +153,23 @@ class LinkedInSearcher:
         company_name = await self._extract_company_name()
         self._emit(f"Company detected: {company_name}", 12)
 
+        # When both filters are present, randomize order: humans don't always
+        # apply them in the same sequence and the resulting URL is identical.
+        steps: list[tuple[str, Any]] = []
         if config.keyword:
-            self._emit(f"Applying keyword filter: {config.keyword}", 20)
-            await self._apply_company_keyword_filter(config.keyword)
-
+            steps.append(("keyword", config.keyword))
         if config.location:
-            self._emit(f"Applying location filter: {config.location}", 30)
-            await self._apply_company_location_filter(config.location)
+            steps.append(("location", config.location))
+        if len(steps) > 1 and self.rhythm.rng.random() < 0.5:
+            steps.reverse()
+
+        for kind, value in steps:
+            if kind == "keyword":
+                self._emit(f"Applying keyword filter: {value}", 20)
+                await self._apply_company_keyword_filter(value)
+            else:
+                self._emit(f"Applying location filter: {value}", 30)
+                await self._apply_company_location_filter_with_retry(value)
 
         all_profiles: list[PersonProfile] = []
         seen_urls: set[str] = set()
@@ -143,6 +180,8 @@ class LinkedInSearcher:
                 f"Extracting company people (load {loads + 1})...",
                 max(35, state.percent(35, 95)),
             )
+            await human_sleep(self.rhythm, "scan")
+            await hover_drift(self.browser, self.rhythm)
             page_profiles = await self._extract_company_page_profiles(company_name)
 
             for profile in page_profiles:
@@ -160,6 +199,9 @@ class LinkedInSearcher:
                 state.percent(35, 95),
             )
 
+            if self.camouflage:
+                await self._maybe_decoy()
+
             if len(all_profiles) >= config.max_results:
                 break
 
@@ -167,16 +209,12 @@ class LinkedInSearcher:
             if not has_more:
                 break
 
-            await asyncio.sleep(random.uniform(2.0, 4.0))
+            await maybe_micro_break(self.rhythm)
+            await human_sleep(self.rhythm, "next_page")
 
         final = all_profiles[: config.max_results]
         self._emit_done(f"Company search complete: {len(final)} profiles")
         return final
-
-    async def _type_naturally(self, element: Any, text: str) -> None:
-        for char in text:
-            await element.send_keys(char)
-            await asyncio.sleep(random.uniform(0.05, 0.15))
 
     async def _switch_to_people_results(self, query: str) -> None:
         current_url = str(self.browser.tab.url)
@@ -188,8 +226,8 @@ class LinkedInSearcher:
             try:
                 text = await pill.apply("el => el.textContent")
                 if text and "People" in str(text):
-                    await pill.click()
-                    await asyncio.sleep(random.uniform(2.0, 3.0))
+                    await human_click(self.browser, pill, self.rhythm)
+                    await human_sleep(self.rhythm, "page_load")
                     if "/search/results/people/" in str(self.browser.tab.url):
                         return
             except Exception:
@@ -200,7 +238,8 @@ class LinkedInSearcher:
         params = parse_qs(parsed.query)
         keywords = params.get("keywords", [query])[0]
         direct_people_url = f"https://www.linkedin.com/search/results/people/?keywords={quote(keywords)}"
-        await self.browser.goto(direct_people_url, wait_seconds=3)
+        await self.browser.goto(direct_people_url, wait_seconds=0)
+        await human_sleep(self.rhythm, "page_load")
 
     async def _apply_standard_location_filter(self, location: str) -> None:
         normalized = location.strip()
@@ -235,9 +274,9 @@ class LinkedInSearcher:
             await locations_toggle.scroll_into_view()
         except Exception:
             pass
-        await asyncio.sleep(0.3)
-        await locations_toggle.click()
-        await asyncio.sleep(random.uniform(1.0, 1.6))
+        await human_sleep(self.rhythm, "tick")
+        await human_click(self.browser, locations_toggle, self.rhythm)
+        await human_sleep(self.rhythm, "micro")
 
         location_selectors = [
             'input[placeholder*="Add a location"]',
@@ -252,12 +291,12 @@ class LinkedInSearcher:
             await self._dismiss_dialog()
             raise RuntimeError("Could not find location input in LinkedIn filters.")
 
-        await location_input.click()
-        await asyncio.sleep(0.2)
+        await human_click(self.browser, location_input, self.rhythm)
+        await human_sleep(self.rhythm, "tick")
         await self._clear_focused_input()
-        await asyncio.sleep(0.1)
-        await self._type_naturally(location_input, location)
-        await asyncio.sleep(random.uniform(0.8, 1.2))
+        await human_sleep(self.rhythm, "tick")
+        await human_type(self.browser, location_input, location, self.rhythm, allow_typos=False)
+        await human_sleep(self.rhythm, "micro")
         await self._select_first_typeahead_option()
 
         show_results_control = await self.browser.select_first(
@@ -279,9 +318,9 @@ class LinkedInSearcher:
             await show_results_control.scroll_into_view()
         except Exception:
             pass
-        await asyncio.sleep(0.2)
-        await show_results_control.click()
-        await asyncio.sleep(random.uniform(3.0, 4.5))
+        await human_sleep(self.rhythm, "tick")
+        await human_click(self.browser, show_results_control, self.rhythm)
+        await human_sleep(self.rhythm, "filter_apply")
         if not self._url_has_location_facet(str(self.browser.tab.url)):
             raise RuntimeError("Location filter did not apply (geo facet missing in URL).")
 
@@ -332,23 +371,23 @@ class LinkedInSearcher:
                 await option.scroll_into_view()
             except Exception:
                 pass
-            await asyncio.sleep(0.2)
+            await human_sleep(self.rhythm, "tick")
             try:
-                await option.click()
-                await asyncio.sleep(0.5)
+                await human_click(self.browser, option, self.rhythm)
+                await human_sleep(self.rhythm, "micro")
                 return
             except Exception:
                 pass
 
         await self.browser.press_key("ArrowDown", "ArrowDown", 40)
-        await asyncio.sleep(0.2)
+        await human_sleep(self.rhythm, "tick")
         await self.browser.press_key("Enter", "Enter", 13)
-        await asyncio.sleep(0.5)
+        await human_sleep(self.rhythm, "micro")
 
     async def _dismiss_dialog(self) -> None:
         try:
             await self.browser.press_key("Escape", "Escape", 27)
-            await asyncio.sleep(0.3)
+            await human_sleep(self.rhythm, "tick")
         except Exception:
             pass
 
@@ -435,8 +474,8 @@ class LinkedInSearcher:
         )
 
     async def _go_to_next_page(self) -> bool:
-        await self.browser.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(1.5)
+        await human_scroll(self.browser, self.rhythm, until_bottom=True)
+        await human_sleep(self.rhythm, "micro")
 
         buttons = await self.browser.select_all(
             'button[aria-label="Next"], button.artdeco-pagination__button--next'
@@ -455,10 +494,13 @@ class LinkedInSearcher:
             pass
 
         current_url = str(self.browser.tab.url)
-        await next_button.scroll_into_view()
-        await asyncio.sleep(0.5)
-        await next_button.click()
-        await asyncio.sleep(random.uniform(4.0, 6.0))
+        try:
+            await next_button.scroll_into_view()
+        except Exception:
+            pass
+        await human_sleep(self.rhythm, "tick")
+        await human_click(self.browser, next_button, self.rhythm)
+        await human_sleep(self.rhythm, "next_page")
         return str(self.browser.tab.url) != current_url
 
     def _normalize_company_people_url(self, raw: str) -> str:
@@ -483,15 +525,64 @@ class LinkedInSearcher:
         return f"https://www.linkedin.com/company/{slug}/people/"
 
     async def _navigate_company_people_page(self, people_url: str) -> None:
+        # The target page must match the requested company slug, not just any
+        # company People tab; without this check, a previous target's URL
+        # would short-circuit navigation to the new one.
+        target_slug = self._slug_from_people_url(people_url)
+
+        # ~40% of the time, simulate a human exploring the company by landing
+        # on the overview page first and clicking the People tab.
+        try_overview = self.rhythm.rng.random() < 0.4
+        if try_overview:
+            overview_url = people_url.replace("/people/", "/")
+            try:
+                await self.browser.goto(overview_url, wait_seconds=0)
+                await human_sleep(self.rhythm, "page_load")
+                await human_scroll(
+                    self.browser, self.rhythm,
+                    pixels=int(self.rhythm.rng.uniform(200, 600)),
+                )
+                await human_sleep(self.rhythm, "scan", multiplier=0.6)
+                people_link = await self._find_clickable_by_text("People")
+                if people_link:
+                    try:
+                        await human_click(self.browser, people_link, self.rhythm)
+                        await human_sleep(self.rhythm, "page_load")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         for attempt in range(1, 4):
-            await self.browser.goto(people_url, wait_seconds=random.uniform(4.0, 6.0))
-            current_url = str(self.browser.tab.url)
-            html = await self.browser.tab.get_content()
-            if "/company/" in current_url and "/people/" in current_url and "Organization page for" in html:
+            if await self._on_target_company_people_page(target_slug):
+                return
+            await self.browser.goto(people_url, wait_seconds=0)
+            await human_sleep(self.rhythm, "page_load")
+            if await self._on_target_company_people_page(target_slug):
                 return
             if attempt < 3:
-                await asyncio.sleep(random.uniform(2.0, 3.0))
-        raise RuntimeError("Could not confirm company people page.")
+                await human_sleep(self.rhythm, "think")
+        raise RuntimeError(f"Could not confirm company people page for slug '{target_slug}'.")
+
+    def _slug_from_people_url(self, people_url: str) -> str:
+        parts = urlparse(people_url).path.strip("/").split("/")
+        if "company" in parts:
+            idx = parts.index("company")
+            if idx + 1 < len(parts):
+                return parts[idx + 1].lower()
+        return ""
+
+    async def _on_target_company_people_page(self, target_slug: str) -> bool:
+        current_url = str(self.browser.tab.url)
+        if "/company/" not in current_url or "/people/" not in current_url:
+            return False
+        if target_slug and self._slug_from_people_url(current_url) != target_slug:
+            return False
+        try:
+            html = await self.browser.tab.get_content()
+        except Exception:
+            return False
+        return "Organization page for" in html
 
     async def _extract_company_name(self) -> str:
         html = await self.browser.tab.get_content()
@@ -524,21 +615,43 @@ class LinkedInSearcher:
         )
         if not input_element:
             raise RuntimeError("Could not find company keyword filter input.")
-        await input_element.click()
-        await asyncio.sleep(0.5)
-        await self._type_naturally(input_element, keyword)
+        await human_click(self.browser, input_element, self.rhythm)
+        await human_sleep(self.rhythm, "micro")
+        await human_type(self.browser, input_element, keyword, self.rhythm, allow_typos=False)
+        await human_sleep(self.rhythm, "micro")
         await self.browser.press_key("Enter", "Enter", 13)
-        await asyncio.sleep(random.uniform(3.0, 5.0))
+        await human_sleep(self.rhythm, "filter_apply")
+
+    async def _apply_company_location_filter_with_retry(self, location: str) -> None:
+        """Apply location filter; on failure, retry once with a varied flow."""
+        try:
+            await self._apply_company_location_filter(location)
+            return
+        except Exception as first_exc:
+            # Vary the retry: dismiss, longer pause, then try again.
+            await self._dismiss_dialog()
+            await human_sleep(self.rhythm, "deliberate")
+            try:
+                await self._apply_company_location_filter(location)
+                return
+            except Exception:
+                raise first_exc
 
     async def _apply_company_location_filter(self, location: str) -> None:
+        normalized = location.strip()
+        if not normalized:
+            return
+        if self._url_has_company_location_facet(str(self.browser.tab.url)):
+            return
+
         add_buttons = await self.browser.select_all(
             "button.org-people-bar-graph-module__add-search-facet, "
             'button[aria-label*="Add"][aria-label*="location"]'
         )
         if not add_buttons:
             raise RuntimeError("Could not find location Add button.")
-        await add_buttons[0].click()
-        await asyncio.sleep(1.0)
+        await human_click(self.browser, add_buttons[0], self.rhythm)
+        await human_sleep(self.rhythm, "think", multiplier=0.7)
 
         location_input = await self.browser.select_first(
             [
@@ -548,13 +661,48 @@ class LinkedInSearcher:
         )
         if not location_input:
             raise RuntimeError("Could not find location filter input.")
-        await location_input.click()
-        await self._type_naturally(location_input, location)
-        await asyncio.sleep(1.0)
-        await self.browser.press_key("ArrowDown", "ArrowDown", 40)
-        await asyncio.sleep(0.4)
-        await self.browser.press_key("Enter", "Enter", 13)
-        await asyncio.sleep(random.uniform(3.0, 5.0))
+        await human_click(self.browser, location_input, self.rhythm)
+        await self._clear_focused_input()
+        await human_type(self.browser, location_input, normalized, self.rhythm, allow_typos=False)
+        await human_sleep(self.rhythm, "think", multiplier=0.7)
+
+        selected = await self._select_company_location_option(normalized)
+        if not selected:
+            await self._select_first_typeahead_option()
+
+        await human_sleep(self.rhythm, "filter_apply")
+        if not self._url_has_company_location_facet(str(self.browser.tab.url)):
+            raise RuntimeError("Company location filter did not apply (facetGeoRegion missing in URL).")
+
+    def _url_has_company_location_facet(self, url: str) -> bool:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        values = params.get("facetGeoRegion", [])
+        return any(str(value).strip() for value in values)
+
+    async def _select_company_location_option(self, location: str) -> bool:
+        location_json = json.dumps(location)
+        return bool(
+            await self.browser.evaluate(
+                f"""
+                (() => {{
+                  const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+                  const target = normalize({location_json}).toLowerCase();
+                  const options = Array.from(document.querySelectorAll('li[role="option"]'))
+                    .filter((option) => option.offsetWidth || option.offsetHeight || option.getClientRects().length);
+                  const exact = options.find((option) => normalize(option.innerText).toLowerCase() === target);
+                  const partial = options.find((option) => normalize(option.innerText).toLowerCase().includes(target));
+                  const option = exact || partial;
+                  if (!option) return false;
+                  option.scrollIntoView({{ block: "center" }});
+                  for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {{
+                    option.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true, view: window }}));
+                  }}
+                  return true;
+                }})()
+                """
+            )
+        )
 
     async def _extract_company_page_profiles(self, company_name: str) -> list[PersonProfile]:
         html = await self.browser.tab.get_content()
@@ -613,8 +761,8 @@ class LinkedInSearcher:
         )
 
     async def _click_show_more_results(self) -> bool:
-        await self.browser.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(random.uniform(1.5, 2.5))
+        await human_scroll(self.browser, self.rhythm, until_bottom=True)
+        await human_sleep(self.rhythm, "micro")
 
         buttons = await self.browser.select_all(
             "button.scaffold-finite-scroll__load-button, button[class*='load-button']"
@@ -630,11 +778,22 @@ class LinkedInSearcher:
         except Exception:
             pass
 
-        await button.scroll_into_view()
-        await asyncio.sleep(0.5)
-        await button.click()
-        await asyncio.sleep(random.uniform(3.0, 5.0))
+        try:
+            await button.scroll_into_view()
+        except Exception:
+            pass
+        await human_sleep(self.rhythm, "tick")
+        await human_click(self.browser, button, self.rhythm)
+        await human_sleep(self.rhythm, "next_page")
         return True
+
+    async def _maybe_decoy(self) -> None:
+        """Optionally open a non-target profile in a new tab as camouflage."""
+        try:
+            links = await self.browser.select_all('a[href*="/in/"]')
+        except Exception:
+            return
+        await maybe_decoy_profile_open(self.browser, self.rhythm, links)
 
     def _normalize_profile_url(self, href: str) -> str:
         value = href.split("?")[0].strip()
@@ -659,4 +818,3 @@ class LinkedInSearcher:
             return None
         cleaned = re.sub(r"\s+", " ", text).strip()
         return cleaned or None
-
